@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>App Voz – Paradas e Produção</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; padding: 20px; max-width: 600px; margin: auto }
+    label { display: block; margin-top: 12px; font-weight: bold }
+    input { width: 100%; padding: 8px; margin-top: 4px; font-size: 16px }
+    button { margin-top: 20px; padding: 12px 20px; font-size: 18px; cursor: pointer }
+    #status { margin-top: 15px; font-weight: bold; color: #006600 }
+    #resumo { margin-top: 20px; background: #f3f3f3; padding: 12px; border-radius: 8px; display: none }
+    #menuPosEnvio button { margin-right: 10px }
+  </style>
+</head>
+<body>
+<audio id="beep" src="https://actions.google.com/sounds/v1/cartoon/wood_plank_flicks.ogg"></audio>
+
+<div id="appDiv">
+  <h2>Apontamento de Parada (DISP)</h2>
+  <p>Cada vez que clicar, o app vai pedir o próximo campo. Fale só o valor.</p>
+
+  <label>Turma:<input id="turma" readonly /></label>
+  <label>Linha de Produção:<input id="linha" readonly /></label>
+  <label>Data Início:<input id="dataInicio" readonly /></label>
+  <label>Data Final:<input id="dataFinal" readonly /></label>
+  <label>Hora Início:<input id="horaInicio" readonly /></label>
+  <label>Hora Final:<input id="horaFinal" readonly /></label>
+  <label>Instalação:<input id="instalacao" readonly /></label>
+  <label>OP:<input id="op" readonly /></label>
+  <label>Motivo:<input id="motivo" readonly /></label>
+  <label>Origem:<input id="origem" readonly /></label>
+  <label>Classificação:<input id="classificacao" readonly /></label>
+
+  <button id="startBtn">Começar preenchimento</button>
+  <button id="repetirBtn" style="display:none">🔁 Repetir campo</button>
+  <button id="cancelarBtn" style="display:none">🧹 Cancelar e reiniciar</button>
+  <button id="enviarBtn" style="display:none">Enviar dados</button>
+
+  <div id="status"></div>
+  <div id="resumo"></div>
+  <div id="menuPosEnvio" style="display:none">
+    <button id="novaParadaBtn">➕ Nova parada</button>
+    <button id="apontarProducaoBtn">📦 Apontar produção</button>
+    <button id="encerrarBtn">⏹️ Encerrar</button>
+  </div>
+</div>
+
+<script>
+const beep = document.getElementById('beep');
+
+let campos = [
+  { id:'turma', prompt:'Fale a Turma (ex.: 1, 2, 3 ou 4)' },
+  { id:'linha', prompt:'Fale a Linha de Produção (ex.: coladeira A, B, C ou F)' },
+  { id:'dataInicio', prompt:'Fale a Data Início (ex.: 0407)' },
+  { id:'dataFinal', prompt:'Fale a Data Final (ex.: 0407)' },
+  { id:'horaInicio', prompt:'Fale a Hora Início (ex.: zero sete zero zero)' },
+  { id:'horaFinal', prompt:'Fale a Hora Final (ex.: um quatro três zero)' },
+  { id:'instalacao', prompt:'Fale o Local da Instalação' },
+  { id:'op', prompt:'Fale o número da OP' },
+  { id:'motivo', prompt:'Fale o Motivo' },
+  { id:'origem', prompt:'Fale a Origem' },
+  { id:'classificacao', prompt:'Fale a Classificação' }
+];
+let campoAtual = 0;
+
+function converterTurma(resposta) {
+  const mapa = {
+    "1": "Turma 1 – 6 x 2", "um": "Turma 1 – 6 x 2",
+    "2": "Turma 2 – 6 x 2", "dois": "Turma 2 – 6 x 2",
+    "3": "Turma 3 – 6 x 2", "tres": "Turma 3 – 6 x 2", "três": "Turma 3 – 6 x 2",
+    "4": "Turma 4 – 6 x 2", "quatro": "Turma 4 – 6 x 2"
+  };
+  const termo = resposta.trim().toLowerCase().replace("turma", "").trim();
+  return mapa[termo] || null;
+}
+
+function converterLinha(val){
+  const mapa={"coladeira a":"LINHA_A","coladeira b":"LINHA_B","coladeira c":"LINHA_C","coladeira f":"LINHA_F"};
+  return mapa[val.toLowerCase()]||val;
+}
+function mapearPalavrasParaDigitos(str){
+  const mapa={'zero':'0','um':'1','uma':'1','dois':'2','tres':'3','três':'3','quatro':'4','cinco':'5','seis':'6','sete':'7','oito':'8','nove':'9'};
+  return str.toLowerCase().split(/\s+/).map(p=>mapa[p]??p).join('');
+}
+function converterData(resp){
+  let limp=resp.toLowerCase().replace(/barra/g,'').trim();
+  limp=mapearPalavrasParaDigitos(limp).replace(/\s+/g,'');
+  if(/^\d{4}$/.test(limp)){
+    const dia=limp.slice(0,2);
+    const mes=limp.slice(2,4);
+    const ano=new Date().getFullYear();
+    return `${dia}/${mes}/${ano}`;
+  }
+  return resp;
+}
+function converterHora(resp){
+  const mapa={'zero':'0','um':'1','dois':'2','três':'3','tres':'3','quatro':'4','cinco':'5','seis':'6','sete':'7','oito':'8','nove':'9'};
+  let partes=resp.toLowerCase().split(' ');
+  let numeros=[];
+  for(let parte of partes){
+    if(/^\d+$/.test(parte)) numeros.push(parte);
+    else if(mapa[parte]) numeros.push(mapa[parte]);
+  }
+  let resultado=numeros.join('').replace(/\D/g,'');
+  if(/^\d{4}$/.test(resultado)) return resultado.slice(0,2)+':'+resultado.slice(2);
+  return resp;
+}
+
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const statusDiv = document.getElementById('status');
+const startBtn = document.getElementById('startBtn');
+const enviarBtn=document.getElementById('enviarBtn');
+const repetirBtn=document.getElementById('repetirBtn');
+const cancelarBtn=document.getElementById('cancelarBtn');
+
+if(!SpeechRecognition){
+  statusDiv.textContent='Seu navegador não suporta reconhecimento de voz.';
+  startBtn.disabled=true;
+}else{
+  const recognition=new SpeechRecognition();
+  recognition.lang='pt-BR';
+  recognition.interimResults=false;
+  recognition.maxAlternatives=1;
+
+  recognition.onstart=()=>{beep.play(); statusDiv.textContent=campos[campoAtual].prompt+'... ouvindo.'; startBtn.disabled=true; repetirBtn.style.display='none'; cancelarBtn.style.display='none';};
+  recognition.onerror=e=>{statusDiv.textContent='Erro: '+e.error+'. Clique novamente para continuar.'; startBtn.disabled=false; repetirBtn.style.display='inline-block'; cancelarBtn.style.display='inline-block';};
+  recognition.onspeechend=()=>recognition.stop();
+
+  recognition.onresult=evt=>{
+    let resposta=evt.results[0][0].transcript.trim();
+    statusDiv.textContent='Você disse: '+resposta;
+    const campoId=campos[campoAtual].id;
+
+    if(campoId==='turma'){
+      const turma = converterTurma(resposta);
+      if (!turma) {
+        alert("Turma não reconhecida. Diga: 1, 2, 3 ou 4.");
+        repetirBtn.style.display = 'inline-block';
+        recognition.start();
+        return;
+      }
+      resposta = turma;
+    }
+
+    if(campoId==='linha') resposta=converterLinha(resposta);
+    if(campoId.includes('data')) resposta=converterData(resposta);
+    if(campoId.includes('hora')) resposta=converterHora(resposta);
+    document.getElementById(campoId).value=resposta;
+
+    if(campoId==='motivo'){
+      const mot=resposta.toLowerCase();
+      if((mot.includes('mec')||mot.includes('elétr')||mot.includes('eletr'))&&!document.getElementById('nota')){
+        const label=document.createElement('label');
+        label.innerHTML='Nota PM:<input id="nota" readonly />';
+        enviarBtn.before(label);
+        campos.splice(campoAtual+1,0,{id:'nota',prompt:'Fale o número da Nota PM'});
+      }
+    }
+    campoAtual++;
+    if(campoAtual<campos.length){
+      startBtn.textContent='Próximo: '+campos[campoAtual].prompt;
+      repetirBtn.style.display='inline-block';
+      cancelarBtn.style.display='inline-block';
+    }else{
+      startBtn.textContent='Preenchimento concluído';
+      startBtn.disabled=true;
+      statusDiv.textContent='✅ Todos os campos preenchidos.';
+      enviarBtn.style.display='inline-block';
+      repetirBtn.style.display='none';
+      cancelarBtn.style.display='none';
+    }
+    startBtn.disabled=false;
+  };
+
+  startBtn.onclick=()=>{if(campoAtual<campos.length) recognition.start();};
+  repetirBtn.onclick=()=>{if(campoAtual>0) campoAtual--; recognition.start();};
+}
+
+function montarResumoDados(d){
+  let html='<h3>Resumo do envio</h3><ul>';
+  Object.entries(d).forEach(([k,v])=>{html+='<li><strong>'+k+':</strong> '+v+'</li>';});
+  html+='</ul>';
+  return html;
+}
+
+enviarBtn.onclick=()=>{
+  const dados={};
+  let faltando = false;
+  campos.forEach(c=>{
+    const el=document.getElementById(c.id);
+    if(el){
+      dados[c.id]=el.value;
+      if(el.value.trim()==='') faltando = true;
+    }
+  });
+  if(faltando){
+    alert('Por favor, preencha todos os campos antes de enviar.');
+    return;
+  }
+  if(dados.nota==='') delete dados.nota;
+  const resumoDiv=document.getElementById('resumo');
+  resumoDiv.innerHTML=montarResumoDados(dados);
+  resumoDiv.style.display='block';
+  enviarBtn.style.display='none';
+  document.getElementById('menuPosEnvio').style.display='block';
+};
+
+cancelarBtn.onclick=()=>{
+  document.querySelectorAll('#appDiv input').forEach(i=>i.value='');
+  document.getElementById('resumo').style.display='none';
+  document.getElementById('menuPosEnvio').style.display='none';
+  campoAtual=0;
+  startBtn.textContent='Começar preenchimento';
+  startBtn.disabled=false;
+  enviarBtn.style.display='none';
+  repetirBtn.style.display='none';
+  cancelarBtn.style.display='none';
+  statusDiv.textContent='';
+  const notaLabel=document.querySelector('input#nota')?.parentElement;
+  if(notaLabel){
+    notaLabel.remove();
+    campos=campos.filter(c=>c.id!=='nota');
+  }
+};
+
+document.getElementById('novaParadaBtn').onclick=()=>cancelarBtn.onclick();
+document.getElementById('apontarProducaoBtn').onclick=()=>{alert('Módulo de produção ainda em construção.');};
+document.getElementById('encerrarBtn').onclick=()=>{location.reload();};
+</script>
+</body>
+</html>
